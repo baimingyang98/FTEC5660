@@ -48,6 +48,49 @@ DeepSeek Flash model. JPEG, PNG, GIF, and WebP inputs are accepted by the
 homework runner.
 
 
-## Homework 1 solution: 
-> to students: please fill your solution description here.
+## Homework 1 solution
+
+### Chain design
+
+```mermaid
+flowchart TD
+    A["receipt images"] --> B["image_data_url()<br/>base64 data URL"]
+    B --> C{"chain.batch()<br/>every receipt x 5 reads,<br/>one parallel batch"}
+
+    C --> D["ChatPromptTemplate<br/>transcription-only prompt"]
+    D --> E["ChatDeepSeek<br/>deepseek-v4-flash-vision-exp<br/>temperature 0"]
+    E --> F["JsonOutputParser<br/>items, discounts, subtotal,<br/>rounding, final_paid"]
+
+    F --> G["per read, in Python:<br/>sum items, sum discounts"]
+    G --> H["rank the reads<br/>1. payment line closes<br/>2. items reconcile subtotal<br/>3. labels confirm amounts<br/>4. majority vote"]
+    H --> I["Q1 = sum of final_paid<br/>Q2 = sum of gross"]
+    I --> J["HK$1974.30<br/>HK$2348.20"]
+```
+
+### Description
+
+The model is used only to **transcribe**, never to calculate. Its prompt asks for
+the printed lines of one receipt as JSON and explicitly forbids adding,
+reconciling or adjusting any figure; every total is then summed in Python, where
+the arithmetic cannot be hallucinated. This matters more than it sounds. An
+earlier version of this chain told the model that `sum(items) - sum(discounts)`
+had to equal the subtotal, and the model satisfied that requirement by misreading
+a *second* line to compensate for a first misreading, producing a self-consistent
+wrong answer that no check could detect. Every constraint in the final design is
+therefore evaluated in Python after the fact, and none of them is ever revealed
+to the model, so there is nothing for it to write its numbers towards.
+
+Because a misread digit is not reproducible, each receipt is read five times in a
+single parallel `batch` call and the reads are reconciled against one another.
+Three independent pieces of evidence rank them. First, a read must satisfy
+`subtotal + rounding == final_paid`, which validates the payment line. Second,
+Query 2 needs the bill before discounts, and the receipt states that figure
+twice -- as `subtotal + discounts`, and as the item lines at their printed
+prices -- so reads whose two versions agree are preferred, since only a read that
+got the whole receipt right can reconcile both. Third, most Hong Kong supermarket
+discounts are labelled with their own value (`Buy 3 Save $9.8`,
+`MB APP UPGRADE -$10`), so the label independently confirms the amount column,
+and a read that misreads the column loses that agreement and loses its vote.
+Whatever survives is decided by majority vote, field by field. `answer_queries`
+never raises, so even a total API failure still writes `results.csv`.
 
